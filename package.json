@@ -17,6 +17,7 @@
     "dev:fixtures": "tsx backend/dev/loadFixtures.ts"
   },
   "dependencies": {
+    "dotenv": "^16.4.5",
     "next": "^14.2.35",
     "pg": "^8.12.0",
     "react": "^18.3.1",

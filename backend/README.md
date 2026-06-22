@@ -67,6 +67,8 @@ Riot splits endpoints across two routing systems — both come from env vars:
    RIOT_REGION=americas          # match-v5 / account-v1
    RIOT_PLATFORM=na1             # league-v4 / summoner-v4
    ```
+   All backend scripts load this project-root `.env` automatically (via
+   `dotenv`, wired up in `backend/config.ts`) — no shell `export` needed.
 3. **Run migrations:**
    ```bash
    npm run db:migrate

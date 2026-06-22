@@ -1,7 +1,13 @@
 /**
  * Phase 2 configuration — all secrets come from environment variables.
  * NEVER hardcode the Riot API key or DB credentials. See .env.example.
+ *
+ * `dotenv/config` (imported first) loads the project-root `.env` so every
+ * backend script run via tsx (migrate/seed/ingest/aggregate/dev:fixtures) reads
+ * it automatically — tsx, unlike the Next.js commands, does not load `.env` on
+ * its own.
  */
+import 'dotenv/config';
 
 function required(name: string): string {
   const value = process.env[name];
