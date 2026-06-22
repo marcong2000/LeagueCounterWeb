@@ -93,3 +93,17 @@ export interface ChampionDetail extends ChampionSummary {
   /** Free-form strategy tips (synthetic in Phase 1). */
   tips: string[];
 }
+
+/**
+ * The contract every data source must satisfy. Both the Phase 1 sample provider
+ * (`src/lib/data/sample.ts`) and the Phase 2 DB provider (`src/lib/data/db.ts`)
+ * implement this, so the router in `src/lib/data/index.ts` can swap between them
+ * with no front-end changes (§5 of the build spec).
+ */
+export interface DataProvider {
+  getAllChampions(): Promise<ChampionSummary[]>;
+  getChampion(slug: string): Promise<ChampionDetail | null>;
+  getMatchups(slug: string, lane?: Lane): Promise<Matchup[]>;
+  getAllChampionSlugs(): Promise<string[]>;
+  getDataVersion(): Promise<string>;
+}

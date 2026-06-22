@@ -27,9 +27,22 @@ group-by/self-join. It is swappable: the only consumer is the data-access layer
 | `db/schema.sql` | Tables: `matches`, `participants`, `ingest_seeds`, `matchup_stats`, `champion_stats`. |
 | `db/migrate.ts` | Applies `schema.sql` (idempotent). |
 | `ingest/rateLimiter.ts` | Multi-window token bucket honouring Riot's app/method/burst limits. |
-| `ingest/riotClient.ts` | `summoner`/`match-v5` client with 429 `Retry-After` backoff. |
-| `ingest/worker.ts` | Walks match history from seed players, stores raw rows, resumable. |
+| `ingest/riotClient.ts` | `account`/`summoner`/`league`/`match-v5` client with 429 `Retry-After` backoff. |
+| `ingest/seed.ts` | Bootstraps `ingest_seeds` from apex ladders (+ optional Riot IDs). |
+| `ingest/worker.ts` | Walks match history from seeds, stores raw rows, resumable, snowballs new seeds. |
 | `aggregate/job.ts` | Recomputes `matchup_stats` / `champion_stats` per patch using the **same** counter-score formula as the front-end (`src/lib/counterScore.ts`). |
+| `dev/loadFixtures.ts` | **Dev-only** synthetic match loader for testing the DB chain without Riot. |
+| `ingest/riotClient.test.ts` | Unit tests (mocked `fetch`) for routing, 429/5xx backoff, helpers. |
+
+## Routing: region vs platform
+
+Riot splits endpoints across two routing systems — both come from env vars:
+
+- `RIOT_REGION` (americas/europe/asia/sea) → **match-v5** and **account-v1**.
+- `RIOT_PLATFORM` (na1/euw1/kr/…) → **league-v4** and **summoner-v4**.
+
+`RIOT_PLATFORM` must sit inside `RIOT_REGION` (e.g. `na1`/`br1` → `americas`,
+`euw1` → `europe`, `kr` → `asia`).
 
 ## Rate limiting & resilience
 
@@ -44,26 +57,28 @@ group-by/self-join. It is swappable: the only consumer is the data-access layer
 
 ## Go live
 
-1. **Obtain a production key.** Submit this Phase 1 site as your working product
-   at <https://developer.riotgames.com/>. (Dev keys expire every 24h and are not
-   valid for a public site.)
-2. **Provision Postgres** and set env vars (copy `.env.example` → `.env`):
-   ```bash
-   export DATABASE_URL=postgres://…
-   export RIOT_API_KEY=RGAPI-…
-   export RIOT_REGION=americas
+1. **Obtain a key.** A development key works for local testing (expires every
+   24h); a **production** key is required for a public site — submit this Phase 1
+   site as your working product at <https://developer.riotgames.com/>.
+2. **Provision Postgres** and configure env (copy `.env.example` → `.env`):
+   ```
+   RIOT_API_KEY=RGAPI-…          # paste your key here (never committed)
+   DATABASE_URL=postgres://…
+   RIOT_REGION=americas          # match-v5 / account-v1
+   RIOT_PLATFORM=na1             # league-v4 / summoner-v4
    ```
 3. **Run migrations:**
    ```bash
    npm run db:migrate
    ```
-4. **Seed players.** Insert a few known PUUIDs to bootstrap snowball sampling:
-   ```sql
-   INSERT INTO ingest_seeds (puuid, region) VALUES ('<puuid>', 'americas');
+4. **Seed players** from the apex ladders (Challenger/GM/Master). Optionally add
+   specific accounts as `gameName#tag` args:
+   ```bash
+   npm run seed                    # apex ladders only
+   npm run seed -- Faker#KR1       # apex ladders + this account
    ```
-   (Resolve PUUIDs with `RiotClient.getPuuidByRiotId('Name', 'TAG')`.)
-5. **Ingest matches** (run on a schedule / process manager; re-run daily after
-   rotating the key):
+5. **Ingest matches** (schedule it; re-run daily after rotating the key). Each
+   run also snowballs newly-seen players into `ingest_seeds`:
    ```bash
    npm run ingest
    ```
@@ -71,7 +86,28 @@ group-by/self-join. It is swappable: the only consumer is the data-access layer
    ```bash
    npm run aggregate
    ```
-7. **Flip the data layer.** In `src/lib/data/index.ts`, re-export from
-   `./db` instead of the sample assembler and set `isSampleData()` to return
-   `false`. The front-end needs no other changes — the "Sample data" badges
-   disappear automatically and the site now serves real computed stats.
+7. **Flip the data layer** — no code edit needed. Set `DATA_SOURCE=db` in the
+   front-end's environment and (re)deploy:
+   ```bash
+   DATA_SOURCE=db npm run build && DATA_SOURCE=db npm run start
+   ```
+   The "Sample data" badges disappear automatically and the site serves real
+   computed stats. If the DB has no aggregated rows yet, the site safely falls
+   back to sample data and logs a warning.
+8. **(Optional) Refresh caches on demand.** Set `REVALIDATE_TOKEN` and have the
+   aggregation job POST to `/api/revalidate?token=$REVALIDATE_TOKEN` after each
+   run to refresh cached pages immediately.
+
+## Verifying the DB chain without Riot (no key / restricted network)
+
+You can exercise everything except the live Riot calls using synthetic fixtures:
+
+```bash
+export DATABASE_URL=postgres://…
+npm run db:migrate
+npm run dev:fixtures        # insert ~2500 synthetic matches straight into PG
+npm run aggregate           # compute champion_stats + matchup_stats
+DATA_SOURCE=db npm run dev  # front-end now serves the computed numbers
+```
+
+The Riot HTTP layer itself is covered by `npm run test` (mocked `fetch`).

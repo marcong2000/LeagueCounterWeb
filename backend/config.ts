@@ -24,18 +24,27 @@ export interface IngestConfig {
   riotApiKey: string;
   /** Postgres connection string. */
   databaseUrl: string;
-  /** Regional routing for match-v5: americas | europe | asia | sea. */
+  /**
+   * REGIONAL routing value for match-v5 + account-v1:
+   * americas | europe | asia | sea.
+   */
   region: string;
+  /**
+   * PLATFORM routing value for league-v4 + summoner-v4:
+   * na1 | euw1 | eun1 | kr | br1 | jp1 | … (must be within `region`).
+   */
+  platform: string;
   /** Ranked queue id to ingest (420 = Solo/Duo). */
   queueId: number;
 }
 
-/** Full config for the ingestion worker (requires the Riot key). */
+/** Full config for the ingestion worker / seeder (requires the Riot key). */
 export function getConfig(): IngestConfig {
   return {
     riotApiKey: required('RIOT_API_KEY'),
     databaseUrl: required('DATABASE_URL'),
     region: process.env.RIOT_REGION ?? 'americas',
+    platform: process.env.RIOT_PLATFORM ?? 'na1',
     queueId: Number(process.env.RIOT_QUEUE_ID ?? '420'),
   };
 }

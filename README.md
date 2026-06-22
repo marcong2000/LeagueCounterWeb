@@ -64,15 +64,22 @@ The front-end **only** imports from a single data-access module,
 getAllChampions(): Promise<ChampionSummary[]>
 getChampion(slug):  Promise<ChampionDetail | null>
 getMatchups(slug, lane?): Promise<Matchup[]>
-isSampleData(): boolean
+getDataVersion(): Promise<string>
+isSampleData(): Promise<boolean>
 ```
 
-- In **Phase 1** these assemble data from Data Dragon (names/images) plus a
-  deterministic sample generator (`src/lib/data/sampleData.ts`).
-- In **Phase 2** the identical signatures read from Postgres
-  (`src/lib/data/db.ts`). Because the types are shared
-  (`src/lib/types.ts`), swapping the source is a drop-in change with **no
-  front-end edits**.
+`index.ts` is a thin **router** that picks a provider implementing the shared
+`DataProvider` contract (`src/lib/types.ts`), selected by the `DATA_SOURCE` env:
+
+- `DATA_SOURCE` unset / `sample` → **sample provider** (`src/lib/data/sample.ts`):
+  Data Dragon names/images + the deterministic sample generator
+  (`src/lib/data/sampleData.ts`). This is the default.
+- `DATA_SOURCE=db` → **DB provider** (`src/lib/data/db.ts`): real computed stats
+  from Postgres. If the DB has no aggregated rows yet, the router logs a warning
+  and falls back to the sample provider so the site never renders blank.
+
+Because both providers satisfy the same contract and types, switching sources is
+an env-var change with **no front-end edits**.
 
 ## The counter score
 
@@ -98,16 +105,22 @@ displayed numbers are internally consistent with what Phase 2 will produce.
 | `/terms`, `/privacy` | Placeholder legal pages (owner replaces before launch). |
 | `404` | Friendly not-found page. |
 
-## Activating Phase 2 (real data) later
+## Activating Phase 2 (real data)
 
 Full instructions are in [`backend/README.md`](backend/README.md). In short:
 
-1. Get a Riot **production** key (submit this site as the working product).
-2. Provision PostgreSQL; copy `.env.example` → `.env` and fill it in.
-3. `npm run db:migrate`, seed players, `npm run ingest`, then `npm run aggregate`.
-4. In `src/lib/data/index.ts`, re-export from `./db` and make
-   `isSampleData()` return `false`. The sample badges disappear and the site
-   serves real computed stats — no other front-end changes needed.
+1. Get a Riot key (dev key works for local testing; **production** key for a
+   public site — submit this site as the working product).
+2. Provision PostgreSQL; copy `.env.example` → `.env` and **paste your key into
+   `RIOT_API_KEY`** (the only place it ever lives — `.env` is gitignored). Set
+   `DATABASE_URL`, `RIOT_REGION`, `RIOT_PLATFORM`.
+3. `npm run db:migrate` → `npm run seed` → `npm run ingest` → `npm run aggregate`.
+4. Set `DATA_SOURCE=db` in the front-end env and (re)deploy. The sample badges
+   disappear and the site serves real computed stats — no code changes needed.
+
+Verify the DB chain without a key (synthetic fixtures):
+`npm run db:migrate && npm run dev:fixtures && npm run aggregate && DATA_SOURCE=db npm run dev`.
+The Riot client itself is unit-tested with `npm run test`.
 
 ## Compliance
 

@@ -13,14 +13,15 @@ export const metadata: Metadata = {
     'How Counterforge computes champion counter scores, where the data comes from, and the required Riot Games attribution.',
 };
 
-export default function AboutPage() {
+export default async function AboutPage() {
+  const sample = await isSampleData();
   return (
     <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
       <h1 className="font-display text-3xl font-bold tracking-tight text-slate-50">
         About Counterforge
       </h1>
 
-      {isSampleData() && (
+      {sample && (
         <div className="mt-4 flex items-center gap-3 rounded-lg border border-ember/30 bg-ember/5 p-4 text-sm text-slate-300">
           <SampleDataBadge />
           <span>

@@ -31,6 +31,9 @@ import {
 /** Max match ids to pull per seed per run (tune for your rate budget). */
 const MATCHES_PER_SEED = 100;
 
+/** Max NEW snowball seeds to enqueue per run (widens sampling over time). */
+const SNOWBALL_CAP = 200;
+
 async function matchExists(client: PoolClient, matchId: string): Promise<boolean> {
   const { rowCount } = await client.query(
     'SELECT 1 FROM matches WHERE match_id = $1',
@@ -85,22 +88,44 @@ async function loadSeeds(pool: Pool): Promise<{ puuid: string; lastTs: number }[
   return rows.map((r) => ({ puuid: r.puuid, lastTs: Number(r.last_match_ts) }));
 }
 
+/**
+ * Snowball sampling: enqueue newly-seen PUUIDs as future seeds so coverage
+ * widens automatically over successive runs. Capped per run; existing seeds are
+ * ignored via ON CONFLICT.
+ */
+async function enqueueSnowballSeeds(
+  pool: Pool,
+  puuids: Set<string>,
+  region: string,
+): Promise<number> {
+  const candidates = [...puuids].slice(0, SNOWBALL_CAP);
+  let added = 0;
+  for (const puuid of candidates) {
+    const { rowCount } = await pool.query(
+      'INSERT INTO ingest_seeds (puuid, region) VALUES ($1, $2) ON CONFLICT (puuid) DO NOTHING',
+      [puuid, region],
+    );
+    added += rowCount ?? 0;
+  }
+  return added;
+}
+
 async function main() {
   const config = getConfig();
   const pool = new Pool({ connectionString: config.databaseUrl });
-  const riot = new RiotClient(config.riotApiKey, config.region);
+  const riot = new RiotClient(config.riotApiKey, config.region, config.platform);
 
   try {
     const seeds = await loadSeeds(pool);
     if (seeds.length === 0) {
       console.warn(
-        'No seeds in ingest_seeds. Bootstrap with known Riot IDs, e.g.:\n' +
-          '  INSERT INTO ingest_seeds (puuid, region) VALUES (…);',
+        'No seeds in ingest_seeds. Bootstrap them first with:  npm run seed',
       );
       return;
     }
 
     let stored = 0;
+    const seenPuuids = new Set<string>();
     for (const seed of seeds) {
       const ids = await riot.getMatchIds(seed.puuid, {
         queue: config.queueId,
@@ -115,6 +140,7 @@ async function main() {
           if (await matchExists(client, id)) continue;
           const match = await riot.getMatch(id);
           await storeMatch(client, match, config.region);
+          for (const p of match.participants) seenPuuids.add(p.puuid);
           newestTs = Math.max(newestTs, match.gameCreation);
           stored++;
         }
@@ -127,7 +153,11 @@ async function main() {
       }
     }
 
-    console.log(`Ingestion run complete. Stored ${stored} new matches.`);
+    const added = await enqueueSnowballSeeds(pool, seenPuuids, config.region);
+    console.log(
+      `Ingestion run complete. Stored ${stored} new matches; ` +
+        `enqueued ${added} new snowball seeds.`,
+    );
   } finally {
     await pool.end();
   }

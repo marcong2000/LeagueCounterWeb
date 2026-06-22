@@ -7,6 +7,7 @@ export const revalidate = 86400;
 
 export default async function HomePage() {
   const champions = await getAllChampions();
+  const sample = await isSampleData();
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
@@ -15,7 +16,7 @@ export default async function HomePage() {
           <h1 className="font-display text-3xl font-bold tracking-tight text-slate-50 sm:text-4xl">
             Champion counter stats
           </h1>
-          {isSampleData() && <SampleDataBadge />}
+          {sample && <SampleDataBadge />}
         </div>
         <p className="mt-3 max-w-2xl text-slate-400">
           Win rates, pick rates, lane splits and matchup counter scores for all{' '}

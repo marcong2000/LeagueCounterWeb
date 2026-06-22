@@ -1,193 +1,87 @@
 /**
- * THE DATA-ACCESS BOUNDARY (§5 of the build spec).
- * ================================================
+ * THE DATA-ACCESS BOUNDARY (§5 of the build spec) — provider router.
+ * =================================================================
  *
- * This is the ONLY module the front-end imports for champion/matchup data.
- * The pages never import the sample generator or (in Phase 2) the database
- * directly. That indirection is what makes the sample -> real swap a drop-in:
+ * This is the ONLY module the front-end imports for champion/matchup data. It
+ * selects a `DataProvider` implementation at runtime and forwards every call to
+ * it, so swapping data sources never touches page code:
  *
- *   Phase 1 (now):   these functions assemble champion data from Data Dragon
- *                    (names/images) + the synthetic sample generator (stats).
- *   Phase 2 (later): replace the bodies below with reads from the computed
- *                    `matchup_stats` Postgres table. The SIGNATURES and the
- *                    returned TYPES stay identical, so no page changes.
+ *   DATA_SOURCE unset | "sample"  -> sampleProvider  (synthetic Phase 1 data)
+ *   DATA_SOURCE = "db"            -> dbProvider       (real Phase 2 computed data)
  *
- * Public API:
+ * Graceful fallback: if DATA_SOURCE=db but the database has no aggregated rows
+ * yet (e.g. before the first ingest+aggregate run), we log a warning and fall
+ * back to the sample provider so the site never renders blank. `isSampleData()`
+ * reflects the provider actually in use, so the "Sample data" badge stays honest.
+ *
+ * Public API (all async):
  *   getAllChampions(): Promise<ChampionSummary[]>
  *   getChampion(slug): Promise<ChampionDetail | null>
  *   getMatchups(slug, lane?): Promise<Matchup[]>
- *   isSampleData(): boolean   // drives the "Sample data" UI badge
+ *   getAllChampionSlugs(): Promise<string[]>
+ *   getDataVersion(): Promise<string>
+ *   isSampleData(): Promise<boolean>   // drives the "Sample data" UI badge
  */
 
-import {
-  championIconUrl,
-  championSplashUrl,
-  getCurrentVersion,
-  getRoster,
-  type DDragonChampion,
-} from '../ddragon';
-import {
-  generateChampionStats,
-  generateMatchups,
-  type ChampionStats,
-} from './sampleData';
+import { sampleProvider } from './sample';
+import { dbProvider, hasData } from './db';
 import type {
   ChampionDetail,
   ChampionSummary,
+  DataProvider,
   Lane,
   Matchup,
 } from '../types';
 
-/**
- * Flips the whole UI between "synthetic numbers" and "real numbers" messaging.
- * In Phase 2, set this to false (or derive it from an env var) once the data
- * layer reads from the database.
- */
-const SAMPLE_DATA_MODE = true;
-
-export function isSampleData(): boolean {
-  return SAMPLE_DATA_MODE;
+interface ResolvedProvider {
+  provider: DataProvider;
+  isSample: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Assembled-data cache (process lifetime)
-// ---------------------------------------------------------------------------
+let resolved: ResolvedProvider | null = null;
 
-interface AssembledData {
-  version: string;
-  summaries: ChampionSummary[];
-  detailsById: Map<string, ChampionDetail>;
-}
+/** Resolve (and memoise) the active provider for this server process. */
+async function resolve(): Promise<ResolvedProvider> {
+  if (resolved) return resolved;
 
-let cache: AssembledData | null = null;
-
-function bestAndWorst(matchups: Matchup[]): {
-  best: ChampionSummary['bestCounter'];
-  worst: ChampionSummary['worstCounter'];
-} {
-  const confident = matchups.filter((m) => !m.lowConfidence);
-  const pool = confident.length > 0 ? confident : matchups;
-  if (pool.length === 0) return { best: null, worst: null };
-
-  let best = pool[0];
-  let worst = pool[0];
-  for (const m of pool) {
-    if (m.counterScore > best.counterScore) best = m;
-    if (m.counterScore < worst.counterScore) worst = m;
+  const wantDb = process.env.DATA_SOURCE === 'db';
+  if (wantDb) {
+    if (await hasData()) {
+      resolved = { provider: dbProvider, isSample: false };
+    } else {
+      console.warn(
+        '[data] DATA_SOURCE=db but no aggregated rows were found. ' +
+          'Falling back to sample data — run `npm run ingest` then `npm run aggregate`.',
+      );
+      resolved = { provider: sampleProvider, isSample: true };
+    }
+  } else {
+    resolved = { provider: sampleProvider, isSample: true };
   }
-  return {
-    best: {
-      opponentId: best.opponentId,
-      opponentName: best.opponentName,
-      counterScore: best.counterScore,
-    },
-    worst: {
-      opponentId: worst.opponentId,
-      opponentName: worst.opponentName,
-      counterScore: worst.counterScore,
-    },
-  };
+  return resolved;
 }
 
-function buildDetail(
-  champ: DDragonChampion,
-  stats: ChampionStats,
-  version: string,
-  matchups: Matchup[],
-): ChampionDetail {
-  const { best, worst } = bestAndWorst(matchups);
-  return {
-    id: champ.id,
-    name: champ.name,
-    title: champ.title,
-    tags: champ.tags,
-    iconUrl: championIconUrl(version, champ.id),
-    splashUrl: championSplashUrl(champ.id),
-    blurb: champ.blurb,
-    winRate: stats.winRate,
-    pickRate: stats.pickRate,
-    laneDistribution: stats.laneDistribution,
-    primaryLanes: stats.primaryLanes,
-    bestCounter: best,
-    worstCounter: worst,
-    tipCount: stats.tips.length,
-    tips: stats.tips,
-    matchups,
-  };
+/** Whether the active provider is the synthetic sample source. */
+export async function isSampleData(): Promise<boolean> {
+  return (await resolve()).isSample;
 }
 
-/** Assemble (and cache) the full dataset from Data Dragon + sample stats. */
-async function assemble(): Promise<AssembledData> {
-  if (cache) return cache;
-
-  const [version, roster] = await Promise.all([
-    getCurrentVersion(),
-    getRoster(),
-  ]);
-
-  // First pass: per-champion aggregate stats (needed before matchups).
-  const statsById = new Map<string, ChampionStats>();
-  for (const champ of roster) {
-    statsById.set(champ.id, generateChampionStats(champ));
-  }
-
-  // Second pass: matchups + assembled details.
-  const detailsById = new Map<string, ChampionDetail>();
-  for (const champ of roster) {
-    const stats = statsById.get(champ.id)!;
-    const matchups = generateMatchups(champ, roster, statsById);
-    detailsById.set(champ.id, buildDetail(champ, stats, version, matchups));
-  }
-
-  const summaries: ChampionSummary[] = roster.map((champ) => {
-    const d = detailsById.get(champ.id)!;
-    // Strip the detail-only fields to produce a lean summary.
-    const { blurb, splashUrl, matchups, tips, ...summary } = d;
-    return summary;
-  });
-  summaries.sort((a, b) => a.name.localeCompare(b.name));
-
-  cache = { version, summaries, detailsById };
-  return cache;
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/** All champions for the home index. */
 export async function getAllChampions(): Promise<ChampionSummary[]> {
-  const { summaries } = await assemble();
-  return summaries;
+  return (await resolve()).provider.getAllChampions();
 }
 
-/** Full detail for one champion by slug (Data Dragon id), or null. */
 export async function getChampion(slug: string): Promise<ChampionDetail | null> {
-  const { detailsById } = await assemble();
-  return detailsById.get(slug) ?? null;
+  return (await resolve()).provider.getChampion(slug);
 }
 
-/** Matchups for a champion, optionally filtered to a single lane. */
-export async function getMatchups(
-  slug: string,
-  lane?: Lane,
-): Promise<Matchup[]> {
-  const detail = await getChampion(slug);
-  if (!detail) return [];
-  const matchups = lane
-    ? detail.matchups.filter((m) => m.lane === lane)
-    : detail.matchups;
-  return matchups;
+export async function getMatchups(slug: string, lane?: Lane): Promise<Matchup[]> {
+  return (await resolve()).provider.getMatchups(slug, lane);
 }
 
-/** Convenience: list of all champion slugs (for static generation). */
 export async function getAllChampionSlugs(): Promise<string[]> {
-  const { summaries } = await assemble();
-  return summaries.map((c) => c.id);
+  return (await resolve()).provider.getAllChampionSlugs();
 }
 
-/** The resolved Data Dragon patch version (for display / attribution). */
 export async function getDataVersion(): Promise<string> {
-  const { version } = await assemble();
-  return version;
+  return (await resolve()).provider.getDataVersion();
 }

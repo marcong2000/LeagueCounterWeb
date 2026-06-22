@@ -1,26 +1,16 @@
 /**
- * Phase 2 DB-backed data provider (scaffold — NOT wired up in Phase 1).
+ * PHASE 2 DB PROVIDER — real computed statistics from PostgreSQL.
  * ============================================================================
  *
- * This file demonstrates the §5 "drop-in swap": it exposes the SAME functions
- * with the SAME signatures and return TYPES as the Phase 1 sample provider, but
- * reads from the computed Postgres tables (`champion_stats`, `matchup_stats`)
- * instead of the synthetic generator.
+ * Implements the same `DataProvider` contract (src/lib/types.ts) as the Phase 1
+ * sample provider, but reads from the computed `champion_stats` / `matchup_stats`
+ * tables produced by `backend/aggregate/job.ts`. Champion names/titles/tags and
+ * image URLs still come from Data Dragon (see ddragon.ts); only the statistics
+ * come from the DB.
  *
- * To go live (after Phase 2 ingestion + aggregation have populated the DB):
- *   1. Set DATABASE_URL and run migrations + ingestion + aggregation.
- *   2. In `src/lib/data/index.ts`, re-export from THIS module instead of the
- *      sample assembler, e.g.:
- *
- *        export { getAllChampions, getChampion, getMatchups,
- *                 getAllChampionSlugs, getDataVersion } from './db';
- *        export const isSampleData = () => false;
- *
- * Names/titles/tags/images still come from Data Dragon (see ddragon.ts); only
- * the statistics come from the DB.
- *
- * This module is intentionally not imported anywhere yet, so Phase 1 never
- * needs a database connection.
+ * Activation is handled by the router in ./index.ts via the DATA_SOURCE env var
+ * (`DATA_SOURCE=db`). When DATA_SOURCE is unset/`sample`, this module is never
+ * queried and no database connection is opened — so Phase 1 needs no DB.
  */
 
 import { Pool } from 'pg';
@@ -31,7 +21,14 @@ import {
   getRosterChampion,
   getRoster,
 } from '../ddragon';
-import { LANES, type ChampionDetail, type ChampionSummary, type Lane, type Matchup } from '../types';
+import {
+  LANES,
+  type ChampionDetail,
+  type ChampionSummary,
+  type DataProvider,
+  type Lane,
+  type Matchup,
+} from '../types';
 
 let pool: Pool | null = null;
 function getPool(): Pool {
@@ -45,6 +42,23 @@ function getPool(): Pool {
   return pool;
 }
 
+/**
+ * True when the DB has at least one aggregated champion row. The router uses
+ * this to fall back to sample data if Phase 2 tables are empty (e.g. before the
+ * first aggregation run), so the site never renders blank.
+ */
+export async function hasData(): Promise<boolean> {
+  try {
+    const { rows } = await getPool().query<{ exists: boolean }>(
+      'SELECT EXISTS (SELECT 1 FROM champion_stats LIMIT 1) AS exists',
+    );
+    return rows[0]?.exists ?? false;
+  } catch (err) {
+    console.warn('[data] DB availability check failed:', (err as Error).message);
+    return false;
+  }
+}
+
 /** Latest patch present in champion_stats. */
 async function latestPatch(): Promise<string> {
   const { rows } = await getPool().query<{ patch: string }>(
@@ -53,7 +67,7 @@ async function latestPatch(): Promise<string> {
   return rows[0]?.patch ?? (await getCurrentVersion());
 }
 
-export async function getMatchups(slug: string, lane?: Lane): Promise<Matchup[]> {
+async function getMatchups(slug: string, lane?: Lane): Promise<Matchup[]> {
   const patch = await latestPatch();
   const params: (string | number)[] = [slug, patch];
   let sql = `
@@ -97,7 +111,7 @@ function bestWorst(matchups: Matchup[]) {
   return { best: pack(best), worst: pack(worst) };
 }
 
-export async function getChampion(slug: string): Promise<ChampionDetail | null> {
+async function getChampion(slug: string): Promise<ChampionDetail | null> {
   const champ = await getRosterChampion(slug);
   if (!champ) return null;
   const patch = await latestPatch();
@@ -144,7 +158,7 @@ export async function getChampion(slug: string): Promise<ChampionDetail | null> 
   };
 }
 
-export async function getAllChampions(): Promise<ChampionSummary[]> {
+async function getAllChampions(): Promise<ChampionSummary[]> {
   const roster = await getRoster();
   const details = await Promise.all(roster.map((c) => getChampion(c.id)));
   return details
@@ -153,11 +167,19 @@ export async function getAllChampions(): Promise<ChampionSummary[]> {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export async function getAllChampionSlugs(): Promise<string[]> {
+async function getAllChampionSlugs(): Promise<string[]> {
   const champs = await getAllChampions();
   return champs.map((c) => c.id);
 }
 
-export async function getDataVersion(): Promise<string> {
+async function getDataVersion(): Promise<string> {
   return getCurrentVersion();
 }
+
+export const dbProvider: DataProvider = {
+  getAllChampions,
+  getChampion,
+  getMatchups,
+  getAllChampionSlugs,
+  getDataVersion,
+};

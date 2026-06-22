@@ -37,12 +37,25 @@ export interface MatchDetail {
   participants: MatchParticipant[];
 }
 
+/** Apex tiers exposed by league-v4 as dedicated league endpoints. */
+export type ApexTier = 'challenger' | 'grandmaster' | 'master';
+
+export interface LeagueEntry {
+  /** Present on modern league-v4 responses; may be empty on some shards. */
+  puuid?: string;
+  /** Legacy encrypted summoner id (used to resolve puuid when absent). */
+  summonerId?: string;
+}
+
 export class RiotClient {
   private limiter: RateLimiter;
 
   constructor(
     private apiKey: string,
+    /** Regional routing (americas/europe/asia/sea) for match-v5 + account-v1. */
     private region: string,
+    /** Platform routing (na1/euw1/kr/…) for league-v4 + summoner-v4. */
+    private platform: string = 'na1',
     limiter?: RateLimiter,
   ) {
     this.limiter = limiter ?? new RateLimiter(DEFAULT_PROD_WINDOWS);
@@ -104,6 +117,33 @@ export class RiotClient {
     const url = `https://${this.region}.api.riotgames.com/lol/match/v5/matches/${matchId}`;
     const raw = await this.get<RawMatchV5>(url);
     return normaliseMatch(raw);
+  }
+
+  /**
+   * Fetch an apex league (challenger/grandmaster/master) for a ranked queue and
+   * return its entries (league-v4, PLATFORM routing).
+   */
+  async getApexLeague(
+    tier: ApexTier,
+    queue = 'RANKED_SOLO_5x5',
+  ): Promise<LeagueEntry[]> {
+    const url =
+      `https://${this.platform}.api.riotgames.com/lol/league/v4/${tier}leagues/by-queue/` +
+      `${queue}`;
+    const data = await this.get<{ entries: LeagueEntry[] }>(url);
+    return data.entries ?? [];
+  }
+
+  /**
+   * Resolve a PUUID from an encrypted summoner id (summoner-v4, PLATFORM
+   * routing). Only needed for shards whose league entries omit `puuid`.
+   */
+  async getPuuidBySummonerId(summonerId: string): Promise<string> {
+    const url =
+      `https://${this.platform}.api.riotgames.com/lol/summoner/v4/summoners/` +
+      `${encodeURIComponent(summonerId)}`;
+    const data = await this.get<{ puuid: string }>(url);
+    return data.puuid;
   }
 }
 

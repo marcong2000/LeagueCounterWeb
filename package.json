@@ -9,9 +9,12 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test backend/**/*.test.ts",
+    "seed": "tsx backend/ingest/seed.ts",
     "ingest": "tsx backend/ingest/worker.ts",
     "aggregate": "tsx backend/aggregate/job.ts",
-    "db:migrate": "tsx backend/db/migrate.ts"
+    "db:migrate": "tsx backend/db/migrate.ts",
+    "dev:fixtures": "tsx backend/dev/loadFixtures.ts"
   },
   "dependencies": {
     "next": "^14.2.35",

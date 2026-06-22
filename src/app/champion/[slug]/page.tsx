@@ -41,6 +41,7 @@ export default async function ChampionPage({
   if (!champion) notFound();
 
   const version = await getDataVersion();
+  const sample = await isSampleData();
   const availableLanes: Lane[] = LANES.filter(
     (l) => champion.laneDistribution[l] >= 0.15,
   );
@@ -77,7 +78,7 @@ export default async function ChampionPage({
                 {champion.tags.map((t) => (
                   <span key={t} className="chip">{t}</span>
                 ))}
-                {isSampleData() && <SampleDataBadge />}
+                {sample && <SampleDataBadge />}
               </div>
               <h1 className="font-display text-3xl font-bold tracking-tight text-slate-50 sm:text-4xl">
                 {champion.name}
