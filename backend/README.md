@@ -84,6 +84,12 @@ Riot splits endpoints across two routing systems — both come from env vars:
    ```bash
    npm run ingest
    ```
+   On a **development key** the worker self-throttles to ~100 requests / 2 min
+   (`RIOT_RATE_PROFILE=dev`, the default), so it is deliberately slow but prints
+   per-seed progress as it goes. Defaults are small (`INGEST_MAX_SEEDS=10`,
+   `INGEST_MATCHES_PER_SEED=20`) so a first run finishes in a few minutes. Once
+   you have a **production key**, set `RIOT_RATE_PROFILE=prod` and raise those
+   numbers to ingest at full speed.
 6. **Aggregate** after each ingestion batch / once per patch:
    ```bash
    npm run aggregate

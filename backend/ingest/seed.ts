@@ -23,9 +23,13 @@
 
 import { Pool } from 'pg';
 import { getConfig } from '../config';
+import { RateLimiter, windowsForProfile } from './rateLimiter';
 import { RiotClient, type ApexTier, type LeagueEntry } from './riotClient';
 
 const APEX_TIERS: ApexTier[] = ['challenger', 'grandmaster', 'master'];
+
+/** Cap entries taken per tier so a dev-key seed run stays quick. */
+const MAX_PER_TIER = Number(process.env.SEED_MAX_PER_TIER ?? '150');
 
 /** Resolve league entries to PUUIDs, using summoner-v4 only when needed. */
 async function entriesToPuuids(
@@ -76,14 +80,20 @@ function parseRiotIdArgs(args: string[]): { gameName: string; tagLine: string }[
 async function main() {
   const config = getConfig();
   const pool = new Pool({ connectionString: config.databaseUrl });
-  const riot = new RiotClient(config.riotApiKey, config.region, config.platform);
+  const limiter = new RateLimiter(windowsForProfile(config.rateProfile));
+  const riot = new RiotClient(
+    config.riotApiKey,
+    config.region,
+    config.platform,
+    limiter,
+  );
 
   try {
     const collected = new Set<string>();
 
-    // 1. Apex ladders.
+    // 1. Apex ladders (capped per tier so a dev-key run stays quick).
     for (const tier of APEX_TIERS) {
-      const entries = await riot.getApexLeague(tier);
+      const entries = (await riot.getApexLeague(tier)).slice(0, MAX_PER_TIER);
       const puuids = await entriesToPuuids(riot, entries);
       puuids.forEach((p) => collected.add(p));
       console.log(`${tier}: ${entries.length} entries -> ${puuids.length} puuids`);

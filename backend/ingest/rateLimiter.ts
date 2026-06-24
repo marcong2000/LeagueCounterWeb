@@ -79,3 +79,21 @@ export const DEFAULT_PROD_WINDOWS: RateWindow[] = [
   { limit: 500, intervalMs: 10_000 }, // burst window
   { limit: 30_000, intervalMs: 600_000 }, // sustained window
 ];
+
+/**
+ * Limits for a PERSONAL / DEVELOPMENT key: 20 requests/sec and 100 requests/2
+ * minutes. Staying just under these avoids the constant 429s (and the long
+ * Retry-After pauses) you get if you drive a dev key at production speed.
+ */
+export const DEFAULT_DEV_WINDOWS: RateWindow[] = [
+  { limit: 20, intervalMs: 1_000 },
+  { limit: 100, intervalMs: 120_000 },
+];
+
+export type RateProfile = 'dev' | 'prod';
+
+/** Pick the appropriate windows for the configured key tier. */
+export function windowsForProfile(profile: RateProfile): RateWindow[] {
+  return profile === 'prod' ? DEFAULT_PROD_WINDOWS : DEFAULT_DEV_WINDOWS;
+}
+

@@ -42,15 +42,32 @@ export interface IngestConfig {
   platform: string;
   /** Ranked queue id to ingest (420 = Solo/Duo). */
   queueId: number;
+  /**
+   * Rate-limit tier. 'dev' (default) stays under personal/development key
+   * limits (100 req / 2 min); 'prod' uses the higher production windows.
+   */
+  rateProfile: 'dev' | 'prod';
+  /** Max seed players to process per ingestion run. */
+  maxSeeds: number;
+  /** Max match ids to pull per seed per run. */
+  matchesPerSeed: number;
 }
 
 /** Full config for the ingestion worker / seeder (requires the Riot key). */
 export function getConfig(): IngestConfig {
+  const rateProfile = process.env.RIOT_RATE_PROFILE === 'prod' ? 'prod' : 'dev';
+  // Small, fast defaults on a dev key so a first run finishes in minutes.
+  const devDefaults = rateProfile === 'prod';
   return {
     riotApiKey: required('RIOT_API_KEY'),
     databaseUrl: required('DATABASE_URL'),
     region: process.env.RIOT_REGION ?? 'americas',
     platform: process.env.RIOT_PLATFORM ?? 'na1',
     queueId: Number(process.env.RIOT_QUEUE_ID ?? '420'),
+    rateProfile,
+    maxSeeds: Number(process.env.INGEST_MAX_SEEDS ?? (devDefaults ? '50' : '10')),
+    matchesPerSeed: Number(
+      process.env.INGEST_MATCHES_PER_SEED ?? (devDefaults ? '100' : '20'),
+    ),
   };
 }

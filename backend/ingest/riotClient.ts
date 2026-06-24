@@ -16,7 +16,10 @@
  * platform value (na1/euw1/kr/…). Both are passed explicitly below.
  */
 
-import { RateLimiter, DEFAULT_PROD_WINDOWS, sleep } from './rateLimiter';
+import { RateLimiter, DEFAULT_DEV_WINDOWS, sleep } from './rateLimiter';
+
+/** Abort a single request if Riot doesn't respond within this many ms. */
+const REQUEST_TIMEOUT_MS = 15_000;
 
 export interface MatchParticipant {
   puuid: string;
@@ -58,15 +61,28 @@ export class RiotClient {
     private platform: string = 'na1',
     limiter?: RateLimiter,
   ) {
-    this.limiter = limiter ?? new RateLimiter(DEFAULT_PROD_WINDOWS);
+    // Default to development-key limits — safe for the common starter case.
+    this.limiter = limiter ?? new RateLimiter(DEFAULT_DEV_WINDOWS);
   }
 
-  /** Core fetch with rate limiting + 429/5xx backoff. */
+  /** Core fetch with rate limiting + timeout + 429/5xx/network backoff. */
   private async get<T>(url: string, attempt = 0): Promise<T> {
     await this.limiter.acquire();
-    const res = await fetch(url, {
-      headers: { 'X-Riot-Token': this.apiKey },
-    });
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        headers: { 'X-Riot-Token': this.apiKey },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (err) {
+      // Timeout / DNS / connection reset: back off and retry a few times.
+      if (attempt < 5) {
+        await sleep(2 ** attempt * 1000);
+        return this.get<T>(url, attempt + 1);
+      }
+      throw new Error(`Network error after retries for ${url}: ${(err as Error).message}`);
+    }
 
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get('Retry-After') ?? '1');

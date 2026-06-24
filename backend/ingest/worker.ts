@@ -21,15 +21,13 @@
 
 import { Pool, type PoolClient } from 'pg';
 import { getConfig } from '../config';
+import { RateLimiter, windowsForProfile } from './rateLimiter';
 import {
   RiotClient,
   normaliseLane,
   patchFromGameVersion,
   type MatchDetail,
 } from './riotClient';
-
-/** Max match ids to pull per seed per run (tune for your rate budget). */
-const MATCHES_PER_SEED = 100;
 
 /** Max NEW snowball seeds to enqueue per run (widens sampling over time). */
 const SNOWBALL_CAP = 200;
@@ -81,9 +79,13 @@ async function storeMatch(client: PoolClient, m: MatchDetail, region: string): P
   }
 }
 
-async function loadSeeds(pool: Pool): Promise<{ puuid: string; lastTs: number }[]> {
+async function loadSeeds(
+  pool: Pool,
+  limit: number,
+): Promise<{ puuid: string; lastTs: number }[]> {
   const { rows } = await pool.query<{ puuid: string; last_match_ts: string }>(
-    'SELECT puuid, last_match_ts FROM ingest_seeds ORDER BY updated_at ASC LIMIT 50',
+    'SELECT puuid, last_match_ts FROM ingest_seeds ORDER BY updated_at ASC LIMIT $1',
+    [limit],
   );
   return rows.map((r) => ({ puuid: r.puuid, lastTs: Number(r.last_match_ts) }));
 }
@@ -113,10 +115,16 @@ async function enqueueSnowballSeeds(
 async function main() {
   const config = getConfig();
   const pool = new Pool({ connectionString: config.databaseUrl });
-  const riot = new RiotClient(config.riotApiKey, config.region, config.platform);
+  const limiter = new RateLimiter(windowsForProfile(config.rateProfile));
+  const riot = new RiotClient(
+    config.riotApiKey,
+    config.region,
+    config.platform,
+    limiter,
+  );
 
   try {
-    const seeds = await loadSeeds(pool);
+    const seeds = await loadSeeds(pool, config.maxSeeds);
     if (seeds.length === 0) {
       console.warn(
         'No seeds in ingest_seeds. Bootstrap them first with:  npm run seed',
@@ -124,16 +132,34 @@ async function main() {
       return;
     }
 
+    const budget = seeds.length * config.matchesPerSeed;
+    console.log(
+      `Ingesting from ${seeds.length} seed(s), up to ${config.matchesPerSeed} ` +
+        `matches each (~${budget} matches max).`,
+    );
+    if (config.rateProfile === 'dev') {
+      console.log(
+        'Rate profile: dev (~100 requests / 2 min). This is intentionally slow ' +
+          'so a development key is not throttled — progress prints below.',
+      );
+    }
+
     let stored = 0;
     const seenPuuids = new Set<string>();
-    for (const seed of seeds) {
+    for (let s = 0; s < seeds.length; s++) {
+      const seed = seeds[s];
       const ids = await riot.getMatchIds(seed.puuid, {
         queue: config.queueId,
-        count: MATCHES_PER_SEED,
+        count: config.matchesPerSeed,
         startTime: seed.lastTs > 0 ? Math.floor(seed.lastTs / 1000) : undefined,
       });
+      console.log(
+        `[seed ${s + 1}/${seeds.length}] ${seed.puuid.slice(0, 8)}… : ` +
+          `${ids.length} match id(s) returned`,
+      );
 
       let newestTs = seed.lastTs;
+      let storedThisSeed = 0;
       const client = await pool.connect();
       try {
         for (const id of ids) {
@@ -143,6 +169,10 @@ async function main() {
           for (const p of match.participants) seenPuuids.add(p.puuid);
           newestTs = Math.max(newestTs, match.gameCreation);
           stored++;
+          storedThisSeed++;
+          if (storedThisSeed % 10 === 0) {
+            console.log(`    …stored ${storedThisSeed} new (total ${stored})`);
+          }
         }
         await client.query(
           'UPDATE ingest_seeds SET last_match_ts = $1, updated_at = now() WHERE puuid = $2',
@@ -151,6 +181,7 @@ async function main() {
       } finally {
         client.release();
       }
+      console.log(`    seed done: +${storedThisSeed} new matches`);
     }
 
     const added = await enqueueSnowballSeeds(pool, seenPuuids, config.region);
