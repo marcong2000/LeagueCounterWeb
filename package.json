@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "League of Legends champion counter-pick statistics site (Phase 1 front-end + Phase 2 backend scaffold).",
+  "engines": {
+    "node": ">=18.18.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
